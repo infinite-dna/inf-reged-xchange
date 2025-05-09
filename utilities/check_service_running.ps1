@@ -35,17 +35,15 @@ foreach ($machine in $machines) {
 
     if (Test-Connection -ComputerName $machine -Count 1 -Quiet) {
         try {
-            $status = Invoke-Command -ComputerName $machine -ScriptBlock {
-                param($svc) (Get-Service -Name $svc -ErrorAction Stop).Status
-            } -ArgumentList $serviceName
-
-            Write-Host "Service status on $machine: $status"
+            $service = Get-WmiObject -Class Win32_Service -ComputerName $machine -Filter "Name='$serviceName'" -ErrorAction Stop
+            Write-Host "Service '$serviceName' is $($service.State) on $machine" -ForegroundColor Green
         }
         catch {
-            Write-Host "Error checking service on $machine: $_" -ForegroundColor Red
+            Write-Host "Failed to query service on $machine: $_" -ForegroundColor Red
         }
     }
     else {
-        Write-Host "Cannot reach $machine." -ForegroundColor Yellow
+        Write-Host "Cannot reach $machine (ping failed)." -ForegroundColor Yellow
     }
 }
+
