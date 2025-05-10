@@ -8,18 +8,22 @@ if (!(Test-Path -Path $destinationPath)) {
     New-Item -ItemType Directory -Path $destinationPath | Out-Null
 }
 
-# Read log file and process each matching line
-Get-Content $logFilePath | ForEach-Object {
+# Read log file and extract unique filenames
+$filenames = Get-Content $logFilePath | ForEach-Object {
     if ($_ -match "Error Executing\s*:\s*(.+)$") {
-        $fileName = $matches[1].Trim()
-        $sourceFile = Join-Path -Path $sourceSharePath -ChildPath $fileName
-        $destinationFile = Join-Path -Path $destinationPath -ChildPath $fileName
+        $matches[1].Trim()
+    }
+} | Where-Object { $_ -ne $null } | Select-Object -Unique
 
-        if (Test-Path $sourceFile) {
-            Copy-Item -Path $sourceFile -Destination $destinationFile -Force
-            Write-Host "Copied $fileName"
-        } else {
-            Write-Warning "File not found: $sourceFile"
-        }
+# For each filename, search recursively and copy to destination
+foreach ($fileName in $filenames) {
+    $fileFound = Get-ChildItem -Path $sourceSharePath -Recurse -File -Filter $fileName -ErrorAction SilentlyContinue | Select-Object -First 1
+
+    if ($fileFound) {
+        $destinationFile = Join-Path -Path $destinationPath -ChildPath $fileFound.Name
+        Copy-Item -Path $fileFound.FullName -Destination $destinationFile -Force
+        Write-Host "Copied: $fileFound.FullName to $destinationFile"
+    } else {
+        Write-Warning "File not found: $fileName"
     }
 }
