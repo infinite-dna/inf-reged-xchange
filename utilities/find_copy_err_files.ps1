@@ -8,14 +8,14 @@ if (!(Test-Path -Path $destinationPath)) {
     New-Item -ItemType Directory -Path $destinationPath | Out-Null
 }
 
-# Read log file and extract unique filenames
+# Extract file names from error lines
 $filenames = Get-Content $logFilePath | ForEach-Object {
-    if ($_ -match "Error Executing\s*:\s*(.+)$") {
-        $matches[1].Trim()
+    if ($_ -match "Error executing script:\s*(.+\\([^\\]+))$") {
+        [System.IO.Path]::GetFileName($matches[1])
     }
 } | Where-Object { $_ -ne $null } | Select-Object -Unique
 
-# For each filename, search recursively and copy to destination
+# Recursively search and copy each file
 foreach ($fileName in $filenames) {
     $fileFound = Get-ChildItem -Path $sourceSharePath -Recurse -File -Filter $fileName -ErrorAction SilentlyContinue | Select-Object -First 1
 
