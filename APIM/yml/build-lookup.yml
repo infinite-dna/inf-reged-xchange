@@ -1,0 +1,90 @@
+trigger:
+  - none
+
+parameters:
+  - name: deployToDev
+    type: boolean
+    default: false
+    displayName: 'Deploy to Dev'
+
+  - name: deployToQa
+    type: boolean
+    default: false
+    displayName: 'Deploy to QA'
+
+  - name: build_id
+    type: string
+    default: 'Envname_BuildID'
+    displayName: 'BuildDetail'
+
+stages:
+
+- stage: Release
+  displayName: Release to Environments
+  jobs:
+  - job: Release
+    pool:
+      name: Default
+    steps: 
+    - script: "sed -i 's/{buildid}/$(build_id)/g' $(dev_manifest_path)"
+      displayName: 'Release to DEV'
+      condition: eq(${{ parameters.deployToDev }}, true)
+
+    - script: "sed -i 's/{buildid}/$(build_id)/g' $(qa_manifest_path)"
+      displayName: 'Release to QA'
+      condition: eq(${{ parameters.deployToQa }}, true)
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        artifactName: 'manifests'
+        publishLocation: 'Pipeline'
+        path: 'Manifests'
+
+- stage: Deploy
+  displayName: Deploy to AKS
+  condition: succeeded('Release')
+  jobs:
+  - job: Deploy
+    pool:
+      name: Default
+    steps:
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        artifactName: 'manifests'
+        downloadPath: '$(System.ArtifactsDirectory)/Manifests'
+
+    - task: AzureCLI@2
+      displayName: 'Deploy to DEV'
+      condition: eq(${{ parameters.deployToDev }}, true)
+      inputs:
+        azureSubscription: $(dev_subscription)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks command invoke \
+            --file $(System.ArtifactsDirectory)/$(dev_manifest_path) \
+            --resource-group $(dev_rg) \
+            --name $(dev_cluster) \
+            --command "kubectl apply -f npnlookup-v3-manifest.yml -n $(dev_namespace)"
+
+    - task: AzureCLI@2
+      displayName: 'Deploy to QA'
+      condition: eq(${{ parameters.deployToQa }}, true)
+      inputs:
+        azureSubscription: $(qa_subscription)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks command invoke \
+            --file $(System.ArtifactsDirectory)/$(qa_manifest_path) \
+            --resource-group $(qa_rg) \
+            --name $(qa_cluster) \
+            --command "kubectl apply -f npnlookup-v3-manifest.yml -n $(qa_namespace)"
+
+    - task: DeleteFiles@1
+      displayName: 'Clean workspace'
+      inputs:
+        SourceFolder: '$(Pipeline.Workspace)'
+        Contents: '*/**'
+        RemoveDotFiles: true
+      condition: always()
