@@ -1,0 +1,129 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: buildToDev
+    type: boolean
+    default: true
+    displayName: 'Build to Dev'
+  - name: buildToQa
+    type: boolean
+    default: false
+    displayName: 'Build to QA'
+  - name: buildToQaProd
+    type: boolean
+    default: false
+    displayName: 'Build to QA RPROD'
+  - name: buildToQaSow
+    type: boolean
+    default: false
+    displayName: 'Build to QA SOW'
+  - name: buildToUat
+    type: boolean
+    default: false
+    displayName: 'Build to UAT'
+  - name: buildToProd
+    type: boolean
+    default: false
+    displayName: 'Build to Prod'
+
+resources:
+  repositories:
+    - repository: devRepo
+      type: git
+      name: APIM/XChange
+      ref: v3.0_agency_contracting_sf3.0
+      trigger:
+        branches:
+          include:
+            - v3.0_agency_contracting_sf3.0
+
+    - repository: deployRepo
+      type: git
+      name: APIM/XChange
+      ref: v3.0_agency_contracting_sf3.0
+
+stages:
+- stage: Dev
+  displayName: Build and push image to ACR for Dev
+  condition: eq(variables['Build.Reason'], 'ResourceTrigger')
+  jobs:
+    - job: Build
+      displayName: Build Image for Dev
+      pool:
+        name: $(Agent.JobName)  # Or override at runtime if needed
+      steps:
+        - checkout: self
+        - checkout: devRepo
+
+        - task: Docker@2
+          displayName: Build and Push to Non-Prod ACR
+          inputs:
+            command: buildAndPush
+            repository: $(imageRepository)  # Define this as a runtime pipeline variable
+            dockerfile: $(Build.SourcesDirectory)/XChange/src/RegEd.DS.Lookup/Dockerfile
+            containerRegistry: $(npDockerRegistryServiceConnection)  # Set at runtime
+            buildContext: $(Build.SourcesDirectory)/XChange/src/
+            tags: |
+              $(Build.BuildId)
+
+- stage: Promotion
+  displayName: Build and push image to ACR for Promotion
+  condition: eq(variables['Build.Reason'], 'Manual')
+  jobs:
+    - job: Build
+      displayName: Conditional Builds
+      pool:
+        name: $(Agent.JobName)
+      steps:
+        - checkout: self
+        - checkout: deployRepo
+
+        - task: Docker@2
+          displayName: Push to Non-Prod ACR
+          condition: or(
+            eq('${{ parameters.buildToDev }}', true),
+            eq('${{ parameters.buildToQa }}', true),
+            eq('${{ parameters.buildToQaProd }}', true),
+            eq('${{ parameters.buildToQaSow }}', true)
+          )
+          inputs:
+            command: buildAndPush
+            repository: $(imageRepository)
+            dockerfile: $(Build.SourcesDirectory)/XChange/src/RegEd.DS.Lookup/Dockerfile
+            containerRegistry: $(npDockerRegistryServiceConnection)
+            buildContext: $(Build.SourcesDirectory)/XChange/src/
+            tags: |
+              $(Build.BuildId)
+
+        - task: Docker@2
+          displayName: Push to UAT ACR
+          condition: eq('${{ parameters.buildToUat }}', true)
+          inputs:
+            command: buildAndPush
+            repository: $(imageRepository)
+            dockerfile: $(Build.SourcesDirectory)/XChange/src/RegEd.DS.Lookup/Dockerfile
+            containerRegistry: $(uatDockerRegistryServiceConnection)
+            buildContext: $(Build.SourcesDirectory)/XChange/src/
+            tags: |
+              $(Build.BuildId)
+
+        - task: Docker@2
+          displayName: Push to Prod ACR
+          condition: eq('${{ parameters.buildToProd }}', true)
+          inputs:
+            command: buildAndPush
+            repository: $(imageRepository)
+            dockerfile: $(Build.SourcesDirectory)/XChange/src/RegEd.DS.Lookup/Dockerfile
+            containerRegistry: $(prodDockerRegistryServiceConnection)
+            buildContext: $(Build.SourcesDirectory)/XChange/src/
+            tags: |
+              $(Build.BuildId)
+
+        - task: DeleteFiles@1
+          displayName: Clean up workspace
+          inputs:
+            SourceFolder: '$(Pipeline.Workspace)'
+            Contents: '*/**'
+            RemoveDotFiles: true
+          condition: always()
