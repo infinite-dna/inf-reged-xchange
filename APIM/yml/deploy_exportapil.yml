@@ -1,0 +1,262 @@
+trigger:
+  - none
+
+resources:
+  pipelines:
+    - pipeline: sourcePipeline
+      source: "Build-Profile-Export-pipeline"
+      trigger: true
+
+parameters:
+  - name: deployToDev
+    type: boolean
+    default: false
+    displayName: 'Deploy to Dev'
+
+  - name: deployToQa
+    type: boolean
+    default: false
+    displayName: 'Deploy to QA'
+
+  - name: deployToUat
+    type: boolean
+    default: false
+    displayName: 'Deploy to UAT'
+
+  - name: deployToProd
+    type: boolean
+    default: false
+    displayName: 'Deploy to Prod'
+
+  - name: dev_build_id
+    type: string
+    default: 'Dev_latest'
+    displayName: 'Dev Build Detail'
+
+  - name: qa_build_id
+    type: string
+    default: 'QA_latest'
+    displayName: 'QA Build Detail'
+
+  - name: uat_build_id
+    type: string
+    default: 'UAT_latest'
+    displayName: 'UAT Build Detail'
+
+  - name: prod_build_id
+    type: string
+    default: 'Prod_latest'
+    displayName: 'Prod Build Detail'
+
+
+pr: none
+
+stages:
+  - stage: autoDeploy
+    condition: eq(variables['Build.Reason'], 'ResourceTrigger')
+    displayName: "Download Artifact and Deploy"
+    jobs:
+      - job: DownloadArtifact
+        displayName: "Download Artifact and Set Variables"
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - download: sourcePipeline
+            displayName: 'Download sourcePipeline Artifact'
+
+          - script: |
+              echo "Reading variable_list.txt and setting pipeline variables..."
+              file="$(Pipeline.Workspace)/sourcePipeline/VariableList/variable_list.txt"
+              if [ ! -f "$file" ]; then
+                echo "ERROR: variable_list.txt not found!"
+                exit 1
+              fi
+
+              while IFS= read -r line
+              do
+                # Expecting lines like: Key: Value
+                # Example: Dev Docker Tag: Dev_12345
+                if [[ "$line" =~ ^([^:]+):[[:space:]]*(.*)$ ]]; then
+                  varName="${BASH_REMATCH[1]}"
+                  varValue="${BASH_REMATCH[2]}"
+                  # Convert varName to a safe variable name, e.g., remove spaces, lowercase
+                  safeVarName=$(echo "$varName" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_')
+                  echo "Setting pipeline variable '$safeVarName' = '$varValue'"
+                  echo "##vso[task.setvariable variable=$safeVarName]$varValue"
+                fi
+              done < "$file"
+
+              echo "All variables set."
+            displayName: 'Parse variable_list.txt and set pipeline variables'
+
+          - script: |
+              sed -i -e 's/{buildid}/$(devdockertag)/g' Manifests/dev/export-api-manifest.yml
+            displayName: 'Prepare Dev Manifest'
+            condition: or(
+              eq(${{ parameters.deployToDev }}, true),
+              contains(lower(variables['selectedenvironments']), 'dev')
+              )
+
+          - task: AzureCLI@2
+            displayName: 'Apply Dev Manifest'
+            condition: or(
+              eq(${{ parameters.deployToDev }}, true),
+              contains(lower(variables['selectedenvironments']), 'dev')
+              )
+            inputs:
+              azureSubscription: 'APIM Non-Prod ( f4a8b67f-8917-4b17-9bea-859a3fb77fda )'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks command invoke \
+                  --file Manifests/dev/export-api-manifest.yml \
+                  --resource-group apim-np-eastus-dev-aks-rg \
+                  --name apim-dev-eastus-aks \
+                  --command "kubectl apply -f export-api-manifest.yml -n dev-apim"
+
+          - script: |
+              sed -i -e 's/{buildid}/$(qadockertag)/g' Manifests/qa/export-api-manifest.yml
+            displayName: 'Prepare QA Manifest'
+            condition: or(
+              eq(${{ parameters.deployToDev }}, true),
+              contains(lower(variables['selectedenvironments']), 'qa')
+              )
+
+          - task: AzureCLI@2
+            condition: or(
+              eq(${{ parameters.deployToDev }}, true),
+              contains(lower(variables['selectedenvironments']), 'qa')
+              )
+            displayName: 'Apply QA Manifest'
+            inputs:
+              azureSubscription: 'APIM Non-Prod ( f4a8b67f-8917-4b17-9bea-859a3fb77fda )'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks command invoke \
+                  --file Manifests/qa/export-api-manifest.yml \
+                  --resource-group apim-np-eastus-qa-aks-rg \
+                  --name apim-qa-aks \
+                  --command "kubectl apply -f export-api-manifest.yml -n qa-apim"
+
+  - stage: Deploy_Dev
+    displayName: 'Deploy to Dev'
+    condition: eq('${{ parameters.deployToDev }}', true)
+    jobs:
+      - job: Deploy_Dev
+        displayName: 'Deploy to Dev AKS'
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - script: |
+              sed -i -e 's/{buildid}/${{ parameters.dev_build_id }}/g' Manifests/dev/export-api-manifest.yml
+            displayName: 'Prepare Dev Manifest'
+
+          - task: AzureCLI@2
+            displayName: 'Apply Dev Manifest'
+            inputs:
+              azureSubscription: 'APIM Non-Prod ( f4a8b67f-8917-4b17-9bea-859a3fb77fda )'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks command invoke \
+                  --file Manifests/dev/export-api-manifest.yml \
+                  --resource-group apim-np-eastus-dev-aks-rg \
+                  --name apim-dev-eastus-aks \
+                  --command "kubectl apply -f export-api-manifest.yml -n dev-apim"
+
+  - stage: Deploy_QA
+    displayName: 'Deploy to QA'
+    condition: eq('${{ parameters.deployToQa }}', true)
+    jobs:
+      - job: Deploy_QA
+        displayName: 'Deploy to QA AKS'
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - script: |
+              sed -i -e 's/{buildid}/${{ parameters.qa_build_id }}/g' Manifests/qa/export-api-manifest.yml
+            displayName: 'Prepare QA Manifest'
+
+          - task: AzureCLI@2
+            displayName: 'Apply QA Manifest'
+            inputs:
+              azureSubscription: 'APIM Non-Prod ( f4a8b67f-8917-4b17-9bea-859a3fb77fda )'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks command invoke \
+                  --file Manifests/qa/export-api-manifest.yml \
+                  --resource-group apim-np-eastus-qa-aks-rg \
+                  --name apim-qa-aks \
+                  --command "kubectl apply -f export-api-manifest.yml -n qa-apim"
+
+  - stage: Deploy_UAT
+    displayName: 'Deploy to UAT'
+    condition: eq('${{ parameters.deployToUat }}', true)
+    jobs:
+      - deployment: Deploy_UAT
+        displayName: 'Deploy to UAT AKS'
+        environment: 'UAT'
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    sed -i -e 's/{buildid}/${{ parameters.uat_build_id }}/g' Manifests/uat/export-api-manifest.yml
+                  displayName: 'Prepare UAT Manifest'
+
+                - task: AzureCLI@2
+                  displayName: 'Apply UAT Manifest'
+                  inputs:
+                    azureSubscription: 'APIM Production ( 5a21cc5e-b3b8-4e45-a3ab-161eb508493b )'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks command invoke \
+                        --file Manifests/uat/export-api-manifest.yml \
+                        --resource-group apim-uat-eastus-aks-rg \
+                        --name apim-uat-eastus-aks \
+                        --command "kubectl apply -f export-api-manifest.yml -n uat-apim"
+
+  - stage: Deploy_Prod
+    displayName: 'Deploy to Prod'
+    condition: eq('${{ parameters.deployToProd }}', true)
+    jobs:
+      - deployment: Deploy_Prod
+        displayName: 'Deploy to Prod AKS'
+        environment: 'Release'
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    sed -i -e 's/{buildid}/${{ parameters.prod_build_id }}/g' Manifests/prod/export-api-manifest.yml
+                  displayName: 'Prepare Prod Manifest'
+
+                - task: AzureCLI@2
+                  displayName: 'Apply Prod Manifest'
+                  inputs:
+                    azureSubscription: 'APIM Production ( 5a21cc5e-b3b8-4e45-a3ab-161eb508493b )'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks command invoke \
+                        --file Manifests/prod/export-api-manifest.yml \
+                        --resource-group apim-prod-eastus-aks-rg \
+                        --name apim-prod-eastus-aks \
+                        --command "kubectl apply -f export-api-manifest.yml -n prod-apim"
