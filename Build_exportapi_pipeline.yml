@@ -1,0 +1,609 @@
+trigger:
+  - none
+
+parameters:
+  - name: buildToDev
+    type: boolean
+    default: false
+    displayName: 'Build to Dev'
+
+  - name: buildToQa
+    type: boolean
+    default: false
+    displayName: 'Build to QA'
+
+  - name: buildToUat
+    type: boolean
+    default: false
+    displayName: 'Build to UAT'
+
+  - name: buildToProd
+    type: boolean
+    default: false
+    displayName: 'Build to Prod'
+
+  - name: buildTag
+    type: string
+    values:
+      - Yes
+      - No
+    default: No
+    displayName: 'Build Tag Required?'
+
+  - name: sourceCodeBranch
+    type: string
+    values:
+      - ProfileExport_api_v1_dev
+      - ProfileExport_api_v1_int
+    default: ProfileExport_api_v1_dev
+    displayName: 'Source Code Branch'
+
+resources:
+  repositories:
+    - repository: DevRepo
+      type: git
+      name: XChange/ExportApi
+      ref: ProfileExport_api_v1_dev
+      trigger:
+        branches:
+          include:
+            - ProfileExport_api_v1_dev
+
+    - repository: IntRepo
+      type: git
+      name: XChange/ExportApi
+      ref: ProfileExport_api_v1_int
+
+
+variables:
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: '52e47970-46ba-460b-bb29-baaa47c54525'
+  imageRepository: 'export-api-v1'
+  containerRegistry: 'apimglobalacr'
+  dockerfilePath: '$(Build.SourcesDirectory)/ExportApi/src/Dockerfile'
+  DEV_GIT_COMMIT: $[ resources.repositories.DevRepo.version ]
+  DEV_GIT_BRANCH: $[ resources.repositories.DevRepo.ref ]
+  Dev_DeploymentRepoName: $[ resources.repositories.DevRepo.name ]
+  INT_GIT_COMMIT: $[ resources.repositories.IntRepo.version ]
+  INT_GIT_BRANCH: $[ resources.repositories.IntRepo.ref ]
+  Int_DeploymentRepoName: $[ resources.repositories.IntRepo.name ]
+  system_accesstoken: $(System.AccessToken)
+
+
+stages:
+  - stage: Build
+    displayName: Build
+    condition: or(
+      eq(${{ parameters.buildToDev }}, true),
+      eq(${{ parameters.buildToQa }}, true),
+      eq(${{ parameters.buildToUat }}, true),
+      eq(${{ parameters.buildToProd }}, true)
+      )
+    jobs:
+      - job: CloneAndBuildJob
+        displayName: Build
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: Bash@3
+            displayName: 'Display Build Details'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Build Environment: $(envTag)"
+                echo "Build Tag: $(buildDetail)"
+                echo "Dev Git Commit": $(DEV_GIT_COMMIT)
+                echo "Dev Git Branch": $(DEV_GIT_BRANCH)
+                echo "Dev Deployment Repo Name": $(Dev_DeploymentRepoName)
+                echo "Build Path": $(Build.SourcesDirectory)/$(Build.Repository.Name)
+                echo "Int Git Commit": $(INT_GIT_COMMIT)
+                echo "Int Git Branch": $(INT_GIT_BRANCH)
+                echo "Int Deployment Repo Name": $(Int_DeploymentRepoName)
+
+          - task: Docker@2
+            displayName: "Login to Azure Container Registry"
+            inputs:
+              command: login
+              containerRegistry: $(dockerRegistryServiceConnection)
+
+
+
+  - stage: buildToDev
+    displayName: 'Build Tag - Dev'
+    dependsOn: Build
+    condition: eq(${{ parameters.buildToDev }}, true)
+    jobs:
+      - job: buildToDevJob
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: Bash@3
+            name: SetDevTagStep
+            displayName: 'Build Tag - Dev'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Build Tag: Dev_$(buildDetail)"
+                echo "##vso[task.setvariable variable=dev_docker_tag;isOutput=true]Dev_$(buildDetail)"
+
+          - task: Docker@2
+            displayName: Build and Push Docker image for Dev
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)
+              dockerfile: $(dockerfilePath)
+              containerRegistry: $(dockerRegistryServiceConnection)
+              buildContext: '**'
+              tags: |
+                Dev_$(buildDetail)
+                Dev_latest
+
+
+
+          - task: Checkmarx AST@2
+            displayName: Checkmarx Scan
+            continueOnError: true
+            inputs:
+              CheckmarxService: 'Xchange-CX'
+              projectName: 'Profile Export'
+              branchName: '$(DEV_GIT_BRANCH)'
+              tenantName: 'RegEd'
+              additionalParams: '--sast-preset-name "Reged Premium" --sast-incremental'
+
+
+          - task: dependency-check-build-task@6
+            displayName: Check Dependencies
+            continueOnError: true
+            inputs:
+              projectName: 'Profile Export'
+              scanPath: '**/*.csproj'
+              format: 'JUNIT'
+              nvdApiKey: 4c67d859-9dfe-490e-b5d9-2dfbeacc7c07
+              failOnCVSS: '4'
+              enableVerbose: true
+
+          - task: PublishTestResults@2
+            displayName: "Publish Dependency Checks Tests Results"
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '$(Agent.BuildDirectory)/TestResults/dependency-check/*junit.xml'
+              mergeTestResults: true
+
+
+          #              Run Gitleaks and send output to terminal.  Gitleaks is installed (v8.24.2)on agent so only need last 3 lines of script
+          #              - script: |
+          #                    sudo apt update
+          #                    sudo apt install -y wget
+          #                    wget -qO gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
+          #                    tar -xvf gitleaks.tar.gz
+          #                    sudo mv gitleaks /usr/local/bin/
+          #                    rm gitleaks.tar.gz
+          #                    gitleaks detect --source=. --exit-code 126 --verbose --redact --report-format junit --report-path=$(Common.TestResultsDirectory)/gitleaks
+          #                displayName: 'Detect Secrets - Gitleaks'
+          #                continueOnError: true
+
+
+          - script: |
+              mkdir -p $(Build.ArtifactStagingDirectory)/gitleaks-report
+              config_message="Using default Gitleaks configuration (no gitleaks.toml found)"
+              gitleaks_output=$(gitleaks detect --source=ExportApi/ -v 2>%1) || exit_code=$?
+              echo "$gitleaks_output" > $(Build.ArtifactStagingDirectory)/gitleaks-report/scan-output.txt
+
+              # Create a readable summary
+              echo "Gitleaks Scan Summary" > $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+              echo "===================" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+              echo "Scan completed at: $(date)" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+              echo "Configuration: $config_message" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+              echo "" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+
+              if [ "$exit_code" -eq "1" ]; then
+                findings_count=$(echo "$gitleaks_output" | grep -c "Finding:")
+
+                echo "🚨 SECURITY ALERT: Found $findings_count potential secret(s) in your code! 🚨" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "Critical Security Issues Found:" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "- Potential secrets or credentials were detected in your changes" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "- These could pose a significant security risk if exposed" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "Required Actions:" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "1. Review the scan-output.txt file in pipeline artifacts" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "2. Remove or revoke any exposed secrets immediately" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "3. Replace secrets with secure environment variables" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "4. Consider using Azure Key Vault for sensitive information" >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+
+                echo "##vso[task.logissue type=error]🚨 SECURITY ALERT: $findings_count potential secret(s) detected in your code! ($config_message)"
+                echo "##vso[task.logissue type=error]Review the 'Gitleaks Security Report' artifact for details and take immediate action."
+                echo "##vso[task.complete result=Failed;]Security scan failed - secrets detected"
+                exit 1
+              else
+                echo "✅ SUCCESS: No secrets were detected in the scan." >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "Code review passed security checks." >> $(Build.ArtifactStagingDirectory)/gitleaks-report/summary.txt
+                echo "##[section]✅ No secrets detected - scan passed successfully ($config_message)"
+                echo "##vso[task.complete result=Succeeded;]Security scan passed - no secrets detected"
+              fi
+            displayName: 'Detect Secrets - Gitleaks'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish GitLeaks Results"
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/gitleaks-report'
+              ArtifactName: 'Gitleaks Security Report'
+
+  - stage: buildToQa
+    displayName: 'Build Tag - QA'
+    dependsOn: Build
+    condition: eq(${{ parameters.buildToQa }}, true)
+    jobs:
+      - job: buildToQaJob
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: Bash@3
+            name: SetQaTagStep
+            displayName: 'Build Tag - QA'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Build Tag: QA_$(buildDetail)"
+                echo "##vso[task.setvariable variable=qa_docker_tag;isOutput=true]QA_$(buildDetail)"
+
+          - task: Docker@2
+            displayName: Build and Push Docker image for QA
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)
+              dockerfile: $(dockerfilePath)
+              containerRegistry: $(dockerRegistryServiceConnection)
+              buildContext: '**'
+              tags: |
+                QA_$(buildDetail)
+                QA_latest
+
+  - stage: buildToUat
+    displayName: 'Build Tag - UAT'
+    dependsOn: Build
+    condition: eq(${{ parameters.buildToUat }}, true)
+    jobs:
+      - job: buildToUatJob
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: Bash@3
+            name: SetUatTagStep
+            displayName: 'Build Tag - UAT'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Build Tag: UAT_$(buildDetail)"
+                echo "##vso[task.setvariable variable=uat_docker_tag;isOutput=true]UAT_$(buildDetail)"
+
+          - task: Docker@2
+            displayName: Build and Push Docker image for UAT
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)
+              dockerfile: $(dockerfilePath)
+              containerRegistry: $(dockerRegistryServiceConnection)
+              buildContext: '**'
+              tags: |
+                UAT_$(buildDetail)
+                UAT_latest
+
+  - stage: buildToProd
+    displayName: 'Build Tag - Prod'
+    dependsOn: Build
+    condition: eq(${{ parameters.buildToProd }}, true)
+    jobs:
+      - job: buildToProdJob
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: Bash@3
+            name: SetProdTagStep
+            displayName: 'Build Tag - Prod'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Build Tag: Prod_$(buildDetail)"
+                echo "##vso[task.setvariable variable=prod_docker_tag;isOutput=true]Prod_$(buildDetail)"
+
+          - task: Docker@2
+            displayName: Build and Push Docker image for Prod
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)
+              dockerfile: $(dockerfilePath)
+              containerRegistry: $(dockerRegistryServiceConnection)
+              buildContext: '**'
+              tags: |
+                Prod_$(buildDetail)
+                Prod_latest
+
+  - stage: gitTagPush
+    displayName: 'Git Tag - Push BuildID'
+    dependsOn: Build
+    condition: eq('${{ parameters.buildTag }}', 'Yes')
+    jobs:
+      - job: gitTagPushJob
+        pool:
+          name: Default
+          demands:
+            - Tag -equals apim
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - checkout: DevRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+
+          - checkout: IntRepo
+            persistCredentials: true
+            condition: eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+
+          - task: Bash@3
+            displayName: 'Set Build Number'
+            name: SetBuildNumber
+            inputs:
+              targetType: 'inline'
+              script: |
+                newbuildnumber=$(Build.BuildId)
+                echo "##vso[build.updatebuildnumber]$newbuildnumber"
+                echo "##vso[task.setvariable variable=buildDetail]$newbuildnumber"
+                echo "##vso[build.addbuildtag]$newbuildnumber"
+                echo "Build Detail: $newbuildnumber"
+
+          - task: CmdLine@2
+            displayName:  "Tag Git Repository: ProfileExport_api_v1_dev"
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+            condition: and(
+              eq('${{ parameters.buildTag }}', 'Yes'),
+              eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_dev')
+              )
+            inputs:
+              script: |
+                git config --global user.email "mark.salazar@reged.com"
+                git config --global user.name "Mark Salazar"
+                cd $(Dev_DeploymentRepoName)
+                git tag -a $(buildDetail) -m "Tagging for Build"
+                git push origin $(buildDetail) --tags
+
+          - task: CmdLine@2
+            displayName: "Tag Git Repository:ProfileExport_api_v1_int"
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+            condition: and(
+              eq('${{ parameters.buildTag }}', 'Yes'),
+              eq('${{ parameters.sourceCodeBranch }}', 'ProfileExport_api_v1_int')
+              )
+            inputs:
+              script: |
+                git config --global user.email "mark.salazar@reged.com"
+                git config --global user.name "Mark Salazar"
+                cd $(Int_DeploymentRepoName)
+                git tag -a $(buildDetail) -m "Tagging for Build"
+                git push origin $(buildDetail) --tags
+
+  - stage: GenerateAndPublishArtifact
+    displayName: 'Generate and Publish Artifact'
+    dependsOn:
+      - buildToDev
+      - buildToQa
+      - buildToUat
+      - buildToProd
+      - gitTagPush
+    condition: or(
+      eq(${{ parameters.buildToDev }}, true),
+      eq(${{ parameters.buildToQa }}, true),
+      eq(${{ parameters.buildToUat }}, true),
+      eq(${{ parameters.buildToProd }}, true)
+      )
+    variables:
+      devDockerTag: $[ stageDependencies.buildToDev.buildToDevJob.outputs['SetDevTagStep.dev_docker_tag'] ]
+      qaDockerTag: $[ stageDependencies.buildToQa.buildToQaJob.outputs['SetQaTagStep.qa_docker_tag'] ]
+      uatDockerTag: $[ stageDependencies.buildToUat.buildToUatJob.outputs['SetUatTagStep.uat_docker_tag'] ]
+      prodDockerTag: $[ stageDependencies.buildToProd.buildToProdJob.outputs['SetProdTagStep.prod_docker_tag'] ]
+    pool:
+      name: Default
+      demands:
+        - Tag -equals apim
+    jobs:
+      - job: GenerateArtifactJob
+        displayName: 'Generate Variable List and Publish Artifact'
+        steps:
+          - script: |
+              buildToDev="${{ parameters.buildToDev }}"
+              buildToQa="${{ parameters.buildToQa }}"
+              buildToUat="${{ parameters.buildToUat }}"
+              buildToProd="${{ parameters.buildToProd }}"
+
+              selected_envs=""
+
+              if [[ "${buildToDev,,}" == "true" ]]; then
+                selected_envs="${selected_envs}Dev,"
+              fi
+              if [[ "${buildToQa,,}" == "true" ]]; then
+                selected_envs="${selected_envs}QA,"
+              fi
+              if [[ "${buildToUat,,}" == "true" ]]; then
+                selected_envs="${selected_envs}UAT,"
+              fi
+              if [[ "${buildToProd,,}" == "true" ]]; then
+                selected_envs="${selected_envs}Prod,"
+              fi
+
+              # Remove trailing comma
+              selected_envs="${selected_envs%,}"
+
+              echo "Selected Envs: $selected_envs"
+              echo "##vso[task.setvariable variable=selectedEnvs;isOutput=true]$selected_envs"
+
+              echo "Selected Environments: $selected_envs" >> variable_list.txt
+              echo "Source Code Branch: $SOURCE_CODE_BRANCH" >> variable_list.txt
+              echo "Build Tag Required: $BUILD_TAG" >> variable_list.txt
+
+              build_to_dev="${BUILD_TO_DEV,,}"
+              build_to_qa="${BUILD_TO_QA,,}"
+              build_to_uat="${BUILD_TO_UAT,,}"
+              build_to_prod="${BUILD_TO_PROD,,}"
+
+              if [ "$build_to_dev" == "true" ]; then
+                echo "Dev Docker Tag: $(devDockerTag)" >> variable_list.txt
+              fi
+
+              if [ "$build_to_qa" == "true" ]; then
+                echo "QA Docker Tag: $(qaDockerTag)" >> variable_list.txt
+              fi
+
+              if [ "$build_to_uat" == "true" ]; then
+                echo "UAT Docker Tag: $(uatDockerTag)" >> variable_list.txt
+              fi
+
+              if [ "$build_to_prod" == "true" ]; then
+                echo "Prod Docker Tag: $(prodDockerTag)" >> variable_list.txt
+              fi
+
+              cat variable_list.txt
+            displayName: 'Generate Variable List File'
+            env:
+              BUILD_TO_DEV: ${{ parameters.buildToDev }}
+              BUILD_TO_QA: ${{ parameters.buildToQa }}
+              BUILD_TO_UAT: ${{ parameters.buildToUat }}
+              BUILD_TO_PROD: ${{ parameters.buildToProd }}
+              SOURCE_CODE_BRANCH: ${{ parameters.sourceCodeBranch }}
+              BUILD_TAG: ${{ parameters.buildTag }}
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'variable_list.txt'
+              artifact: 'VariableList'
+              publishLocation: 'pipeline'
+            displayName: 'Publish Variable List Artifact'
