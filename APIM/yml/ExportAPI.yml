@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dev-producerexport-appsettings
+  namespace: dev-apim
+data:
+  appsettings.Development.json: |
+    {
+        "Logging": {
+            "LogLevel": {
+                "Default": "Information",
+                "Microsoft": "Warning",
+                "Microsoft.Hosting.Lifetime": "Information"
+            }
+        },
+        "AllowedHosts": "*",
+        "AppSettings": {
+            "AppName": "Producer Export API",
+            "Site": "ASPSnippets",
+            "ClientId": "53935894-53ae-44ad-bc9c-f38de218517c",
+            "KeyVaultUrl": "https://apim-np-eastus-kv.vault.azure.net",
+            "AzureJsonConfigKey": "profileexportapi-jsonconfig-dev"
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-producerexport
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dev-producerexport
+  template:
+    metadata:
+      labels:
+        app: dev-producerexport
+    spec:
+      volumes:
+        - name: dev-producerexport-appsettings-volume
+          configMap:
+            name: dev-producerexport-appsettings
+            defaultMode: 420
+      nodeSelector:
+        "kubernetes.io/os": linux
+      containers:
+      - name: dev-producerexport
+        image: apimglobalacr.azurecr.io/export-api-v1:{buildid}
+        volumeMounts:
+          - name: dev-producerexport-appsettings-volume
+            mountPath: app/publish/appsettings.Development.json
+            subPath: appsettings.Development.json
+        env:
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: APIMEnvironment
+          value: "Development"   
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        ports:
+        - containerPort: 8080
+          name: dev-prodexport
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10  
+          periodSeconds: 30
+          timeoutSeconds: 10            
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-export
+  labels:
+    app: dev-producerexport
+spec:
+  type: ClusterIP
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080 
+  selector:
+    app: dev-producerexport
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: dev-producerexport-hpa
+spec:
+  maxReplicas: 2
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: dev-producerexport
+  targetCPUUtilizationPercentage: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dev-producerexport-nginx-ingress
+  namespace: dev-apim
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: dev-backend.apim.src.local
+    http:
+      paths:
+      - backend:
+          service:
+            name: dev-export
+            port:
+              number: 80
+        path: /producerexport/v1
+        pathType: Prefix
+  tls:
+  - hosts:
+    - dev-backend.apim.src.local
+    secretName: apim-backend-nginx-ingress  
+
+          
