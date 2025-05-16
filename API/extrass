@@ -5,3 +5,5 @@ chmod +x .husky/pre-commit
 
 
 npm install --save-dev eslint prettier husky lint-staged
+
+npm install --save-dev @nx/dotnet @nx/azure-functions
