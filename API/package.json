@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "format": "prettier --write .",
+    "lint": "eslint . --ext .ts,.js"
+  },
+  "lint-staged": {
+    "*.{ts,js,json,css,md}": ["prettier --write"]
+  }
+}
