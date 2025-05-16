@@ -3,6 +3,11 @@ npx husky add .husky/pre-commit "npx lint-staged"
 
 chmod +x .husky/pre-commit
 
+"scripts": {
+  "prepare": "git config core.hooksPath .husky"
+}
+
+
 
 npm install --save-dev eslint prettier husky lint-staged
 
