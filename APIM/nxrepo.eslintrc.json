@@ -1,0 +1,14 @@
+{
+  "root": true,
+  "extends": ["plugin:@nx/nx/recommended"],
+  "ignorePatterns": ["node_modules", "dist"],
+  "overrides": [
+    {
+      "files": ["*.ts", "*.js"],
+      "rules": {
+        "semi": ["error", "always"],
+        "quotes": ["error", "single"]
+      }
+    }
+  ]
+}
