@@ -2,3 +2,6 @@ npx husky install
 npx husky add .husky/pre-commit "npx lint-staged"
 
 chmod +x .husky/pre-commit
+
+
+npm install --save-dev eslint prettier husky lint-staged
